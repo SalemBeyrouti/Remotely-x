@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -9,7 +10,11 @@ import { SeniorityModule } from './seniority/seniority.module';
 
 @Module({
   imports: [
-    MongooseModule.forRoot('mongodb+srv://HsenKob:Xq2Dm4llUJAuNjn6@cluster0.pgevcj6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0'),
+    ConfigModule.forRoot(),
+    MongooseModule.forRoot(
+      process.env.MONGODB_URI || 
+      'mongodb://admin:password123@localhost:27017/remotelyx?authSource=admin'
+    ),
     JobsModule,
     MonthlyFrequencyModule,
     SkillCorrelationModule,
