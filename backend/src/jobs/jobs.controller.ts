@@ -7,8 +7,8 @@ export class JobsController {
 
   @Post()
   async createJob(@Body() body: any) {
-    // Fields to group under requirements
-    const reqFields = [
+    // Fields to group under skills
+    const skillFields = [
       'requirements',
       'tools_automation',
       'tech_frontend',
@@ -21,10 +21,10 @@ export class JobsController {
       'platforms_integrations',
     ];
 
-    let requirements: string[] = [];
-    for (const field of reqFields) {
+    let skills: string[] = [];
+    for (const field of skillFields) {
       if (body[field]) {
-        requirements = requirements.concat(
+        skills = skills.concat(
           body[field]
             .split(',')
             .map((item: string) => item.trim())
@@ -33,7 +33,7 @@ export class JobsController {
         delete body[field];
       }
     }
-    body.requirements = requirements;
+    body.skills = skills;
     return this.jobsService.createJob(body);
   }
 }

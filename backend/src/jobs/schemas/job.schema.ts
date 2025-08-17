@@ -43,7 +43,7 @@ export class Job extends Document {
   responsibilities: string;
 
   @Prop({ type: [String] })
-  requirements: string[];
+  skills: string[];
 
   @Prop()
   benefits: string;
