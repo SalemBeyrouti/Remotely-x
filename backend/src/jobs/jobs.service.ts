@@ -2,20 +2,42 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Job } from './schemas/job.schema';
+import { TrendsService } from '../trends/trends.service';
+import { SalariesService } from '../salaries/salaries.service';
+import { SeniorityService } from '../seniority/seniority.service';
+import { SkillCountService } from '../skill-count/skill-count.service';
 
 @Injectable()
 export class JobsService {
   constructor(
     @InjectModel(Job.name) private readonly jobModel: Model<Job>,
+    private readonly trendsService: TrendsService,
+    private readonly salariesService: SalariesService,
+    private readonly seniorityService: SeniorityService,
+    private readonly skillCountService: SkillCountService,
   ) {}
 
   async createJob(data: Partial<Job>): Promise<Job> {
     const createdJob = new this.jobModel(data);
-    return createdJob.save();
+    const saved = await createdJob.save();
+    // update analytics asynchronously (best-effort)
+    Promise.all([
+      this.trendsService.onJobCreated(saved),
+      this.salariesService.onJobCreated(saved),
+      this.seniorityService.onJobCreated(saved),
+      this.skillCountService.onJobCreated(saved),
+    ]).catch(() => {});
+    return saved;
   }
 
   async createBulkJobs(jobs: any[]): Promise<Job[]> {
     const result = await this.jobModel.insertMany(jobs);
+    await Promise.all(result.map(j => Promise.all([
+      this.trendsService.onJobCreated(j),
+      this.salariesService.onJobCreated(j),
+      this.seniorityService.onJobCreated(j),
+      this.skillCountService.onJobCreated(j),
+    ]).catch(() => {})));
     return result as Job[];
   }
 
@@ -51,7 +73,7 @@ export class JobsService {
       $or: [
         { job_title: { $regex: searchTerm, $options: 'i' } },
         { role_overview: { $regex: searchTerm, $options: 'i' } },
-        { requirements: { $in: [new RegExp(searchTerm, 'i')] } }
+        { skills: { $in: [new RegExp(searchTerm, 'i')] } }
       ]
     }).exec();
   }
@@ -86,8 +108,8 @@ export class JobsService {
 
   async getSkillsAnalysis() {
     return this.jobModel.aggregate([
-      { $unwind: '$requirements' },
-      { $group: { _id: '$requirements', count: { $sum: 1 } } },
+      { $unwind: '$skills' },
+      { $group: { _id: '$skills', count: { $sum: 1 } } },
       { $sort: { count: -1 } },
       { $limit: 20 }
     ]);

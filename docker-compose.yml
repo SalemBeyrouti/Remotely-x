@@ -12,8 +12,15 @@ services:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
+      - ./backend/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
     networks:
       - remotelyx-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
 
   # Backend API
   backend:

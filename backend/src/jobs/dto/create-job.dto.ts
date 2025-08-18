@@ -54,7 +54,8 @@ export class CreateJobDto {
 
   @IsOptional()
   @IsArray()
-  requirements?: string[];
+  @IsString({ each: true })
+  skills?: string[];
 
   @IsOptional()
   @IsString()
