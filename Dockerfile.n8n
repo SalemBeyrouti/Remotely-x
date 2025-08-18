@@ -1,0 +1,19 @@
+FROM n8nio/n8n:latest
+
+# Switch to root to install Chromium
+USER root
+
+# Install Chromium using apk (Alpine Linux package manager)
+RUN apk update && apk add --no-cache \
+    chromium \
+    && rm -rf /var/cache/apk/*
+
+# Switch back to node user
+USER node
+WORKDIR /home/node/.n8n
+
+ENV N8N_COMMUNITY_PACKAGES_ENABLED=true
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
+RUN npm install n8n-nodes-puppeteer

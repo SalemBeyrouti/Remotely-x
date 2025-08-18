@@ -1,0 +1,228 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "runCustomScript",
+        "scriptCode": "// Fixed scraper for gamma.app with proper Puppeteer API compatibility\nconst url = $input.first().json.job_description_url;\n\ntry {\n  console.log(`Attempting to scrape: ${url}`);\n\n  // Set a realistic user agent and viewport\n  await $page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');\n  await $page.setViewport({ width: 1920, height: 1080 });\n\n  // Add extra headers to appear more like a real browser\n  await $page.setExtraHTTPHeaders({\n    'Accept-Language': 'en-US,en;q=0.9',\n    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'\n  });\n\n  // Navigate with a single, reliable strategy\n  await $page.goto(url, { \n    waitUntil: 'networkidle2', \n    timeout: 45000 \n  });\n\n  console.log('Navigation successful');\n\n  // Wait for page to stabilize using Promise-based delay instead of waitForTimeout\n  await new Promise(resolve => setTimeout(resolve, 5000));\n\n  // Check if we're on the right page\n  const currentUrl = $page.url();\n  const pageTitle = await $page.title();\n  console.log(`Page loaded: ${pageTitle} at ${currentUrl}`);\n\n  if (!currentUrl.includes('gamma.app')) {\n    throw new Error(`Redirected away from gamma.app to: ${currentUrl}`);\n  }\n\n  // Multiple strategies to find content\n  let content = null;\n  let method = null;\n\n  // Strategy 1: Look for gamma-specific content containers\n  const gammaSelectors = [\n    '[data-testid=\"presentation-content\"]',\n    '[data-testid=\"slide-content\"]',\n    '.slide-content',\n    '.presentation-content',\n    '[role=\"document\"]',\n    '[data-doc-content]',\n    '.doc-content',\n    '.gamma-content'\n  ];\n\n  for (const selector of gammaSelectors) {\n    try {\n      // Use waitForSelector with proper error handling\n      await $page.waitForSelector(selector, { timeout: 8000 });\n      const element = await $page.$(selector);\n      if (element) {\n        content = await $page.evaluate(el => el.innerText.trim(), element);\n        method = `gamma_selector: ${selector}`;\n        console.log(`Found content using: ${selector}, length: ${content.length}`);\n        if (content && content.length > 100) break;\n      }\n    } catch (e) {\n      console.log(`Selector ${selector} not found or failed: ${e.message}`);\n    }\n  }\n\n  // Strategy 2: Look for generic content areas\n  if (!content || content.length < 100) {\n    console.log('Trying generic selectors...');\n    const genericSelectors = [\n      'main',\n      '[role=\"main\"]',\n      'article',\n      '.main-content',\n      '#content',\n      '.content'\n    ];\n\n    for (const selector of genericSelectors) {\n      try {\n        const element = await $page.$(selector);\n        if (element) {\n          const text = await $page.evaluate(el => el.innerText.trim(), element);\n          if (text && text.length > (content?.length || 0)) {\n            content = text;\n            method = `generic_selector: ${selector}`;\n            console.log(`Better content found using: ${selector}, length: ${text.length}`);\n          }\n        }\n      } catch (e) {\n        console.log(`Generic selector ${selector} failed: ${e.message}`);\n      }\n    }\n  }\n\n  // Strategy 3: Extract all text content from body with filtering\n  if (!content || content.length < 200) {\n    console.log('Trying comprehensive text extraction...');\n    try {\n      content = await $page.evaluate(() => {\n        // Remove unwanted elements\n        const unwantedSelectors = [\n          'script', 'style', 'nav', 'header', 'footer', \n          '.nav', '.header', '.footer', '.sidebar',\n          '[class*=\"navigation\"]', '[class*=\"menu\"]',\n          '.ad', '.advertisement', '.cookie'\n        ];\n        \n        unwantedSelectors.forEach(selector => {\n          const elements = document.querySelectorAll(selector);\n          elements.forEach(el => el.remove());\n        });\n        \n        // Look for the main content area\n        const contentSelectors = [\n          '[class*=\"slide\"]', '[class*=\"content\"]', 'main', \n          '[role=\"main\"]', 'article', '.presentation'\n        ];\n        \n        let bestContent = '';\n        let maxLength = 0;\n        \n        contentSelectors.forEach(selector => {\n          try {\n            const elements = document.querySelectorAll(selector);\n            elements.forEach(el => {\n              const text = el.innerText?.trim() || '';\n              if (text.length > maxLength && text.length > 100) {\n                maxLength = text.length;\n                bestContent = text;\n              }\n            });\n          } catch (e) {\n            console.log('Error with selector:', selector, e.message);\n          }\n        });\n        \n        // If no good content found, try body text but filter it\n        if (!bestContent || bestContent.length < 100) {\n          const bodyText = document.body.innerText || '';\n          // Remove common navigation/UI text\n          const filtered = bodyText\n            .split('\\n')\n            .filter(line => {\n              const l = line.trim().toLowerCase();\n              return l.length > 10 && \n                     !l.includes('cookie') && \n                     !l.includes('menu') && \n                     !l.includes('navigation') &&\n                     !l.startsWith('sign in') &&\n                     !l.startsWith('log in');\n            })\n            .join('\\n');\n          bestContent = filtered;\n        }\n        \n        return bestContent.trim();\n      });\n      method = 'comprehensive_extraction';\n      console.log(`Comprehensive extraction result length: ${content?.length || 0}`);\n    } catch (evalError) {\n      console.log('Comprehensive extraction failed:', evalError.message);\n    }\n  }\n\n  // Clean and validate content\n  if (content && content.length > 50) {\n    // Clean up the content\n    content = content\n      .replace(/\\n\\s*\\n\\s*\\n/g, '\\n\\n')\n      .replace(/\\t+/g, ' ')\n      .replace(/\\s{3,}/g, ' ')\n      .trim();\n\n    // Check if content looks relevant\n    const jobKeywords = [\n      'responsibilities', 'requirements', 'experience', 'skills', \n      'qualifications', 'role', 'position', 'candidate', 'job',\n      'work', 'team', 'company', 'duties', 'tasks'\n    ];\n    \n    const contentLower = content.toLowerCase();\n    const keywordMatches = jobKeywords.filter(keyword => \n      contentLower.includes(keyword)\n    );\n\n    return [{\n      ...$json,\n      job_description_text: content,\n      scraper_status: 'success',\n      extraction_method: method,\n      content_length: content.length,\n      keyword_matches: keywordMatches,\n      keywords_found: keywordMatches.length,\n      final_url: currentUrl,\n      page_title: pageTitle\n    }];\n\n  } else {\n    // Take basic screenshot for debugging (no quality parameter)\n    let screenshot = null;\n    try {\n      screenshot = await $page.screenshot({ \n        encoding: 'base64',\n        fullPage: true\n      });\n    } catch (screenshotError) {\n      console.error('Screenshot failed:', screenshotError.message);\n    }\n\n    // Get page source sample for debugging\n    const pageHtml = await $page.content();\n    const htmlSample = pageHtml.substring(0, 1000);\n\n    return [{\n      ...$json,\n      job_description_text: null,\n      error: `Content too short or empty. Length: ${content?.length || 0}`,\n      scraper_status: 'failed',\n      extraction_method: method,\n      content_preview: content?.substring(0, 200) || null,\n      page_title: pageTitle,\n      final_url: currentUrl,\n      html_sample: htmlSample,\n      debug_screenshot: screenshot\n    }];\n  }\n\n} catch (error) {\n  console.error('Scraping error:', error.message);\n  \n  // Enhanced error information\n  let debugInfo = {\n    error_type: error.name,\n    error_message: error.message,\n    timestamp: new Date().toISOString()\n  };\n\n  // Try to get current page info even if failed\n  try {\n    debugInfo.current_url = await $page.url();\n    debugInfo.page_title = await $page.title();\n  } catch (e) {\n    debugInfo.page_info_error = e.message;\n  }\n\n  // Take basic screenshot if possible (no quality parameter)\n  let screenshot = null;\n  try {\n    screenshot = await $page.screenshot({ \n      encoding: 'base64',\n      fullPage: false\n    });\n  } catch (screenshotError) {\n    debugInfo.screenshot_error = screenshotError.message;\n  }\n  \n  return [{\n    ...$json,\n    job_description_text: null,\n    error: `Scraping failed: ${error.message}`,\n    scraper_status: 'error',\n    debug_info: debugInfo,\n    debug_screenshot: screenshot\n  }];\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-puppeteer.puppeteer",
+      "typeVersion": 1,
+      "position": [
+        144,
+        624
+      ],
+      "id": "31973742-6005-4acb-8e9c-3ed23782c31a",
+      "name": "Puppeteer1",
+      "alwaysOutputData": false,
+      "retryOnFail": false,
+      "waitBetweenTries": 3000,
+      "executeOnce": false,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// Fixed Error Handler - properly formats output for n8n\nconst result = $input.all()[0].json;\n\n// Add timestamp\nresult.last_scraped = new Date().toISOString();\n\n// Make sure scraper_status exists\nif (!result.scraper_status) {\n  result.scraper_status = 'failed';\n  result.error_message = result.error_message || 'Unknown error';\n}\n\n// Return the cleaned output\nreturn [{ json: result }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        624
+      ],
+      "id": "dfd695ef-1746-4c0a-8238-3fd92053e2dc",
+      "name": "Error Handling1"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(item => {\n    const data = item.json;\n    const text = data.job_description_text || \"\";\n\n    // Improved section extraction with better boundary detection and section identification\n    function extractSection(headings) {\n        const headingArray = Array.isArray(headings) ? headings : [headings];\n        \n        for (const heading of headingArray) {\n            // Try exact section match first\n            const exactRegex = new RegExp(\n                `(?:^|\\\\n)\\\\s*(${heading})\\\\s*:?\\\\s*\\\\n([\\\\s\\\\S]*?)(?=\\\\n\\\\s*(?:[A-Z][a-zA-Z\\\\s&/]*:|Expand|Position Description|Compensation|Apply Now|$))`, \n                'i'\n            );\n            const exactMatch = text.match(exactRegex);\n            if (exactMatch && exactMatch[2] && exactMatch[2].trim().length > 50) {\n                return exactMatch[2]\n                    .replace(/Expand/gi, '')\n                    .replace(/\\n+/g, ' ')\n                    .replace(/\\s+/g, ' ')\n                    .trim();\n            }\n            \n            // Fallback to looser matching\n            const looseRegex = new RegExp(\n                `(${heading})\\\\s*:?\\\\s*([\\\\s\\\\S]*?)(?=(\\\\n\\\\s*(?:Expand|[A-Z][a-zA-Z\\\\s&/]*:|Position Description|Qualifications|Requirements|Benefits|Compensation|About|Key Responsibilities|Mission|Overview))|$)`, \n                'i'\n            );\n            const looseMatch = text.match(looseRegex);\n            if (looseMatch && looseMatch[2] && looseMatch[2].trim().length > 20) {\n                return looseMatch[2]\n                    .replace(/Expand/gi, '')\n                    .replace(/\\n+/g, ' ')\n                    .replace(/\\s+/g, ' ')\n                    .trim();\n            }\n        }\n        return '';\n    }\n\n    // Enhanced section extraction with more comprehensive headings\n    const responsibilities = extractSection([\n        \"Key Responsibilities\",\n        \"Responsibilities\", \n        \"What You'll Do\",\n        \"Your Role\",\n        \"Job Responsibilities\",\n        \"Main Duties\",\n        \"Primary Responsibilities\"\n    ]);\n\n    const requirements = extractSection([\n        \"Requirements\",\n        \"Qualifications\", \n        \"What We're Looking For\",\n        \"Skills Required\",\n        \"Technical Requirements\",\n        \"Must Have\",\n        \"Essential Skills\"\n    ]);\n\n    const roleOverview = extractSection([\n        \"Role Overview\",\n        \"Position Overview\", \n        \"Job Overview\",\n        \"About the Role\",\n        \"Mission\",\n        \"Job Summary\"\n    ]);\n\n    const companyInfo = extractSection([\n        \"About The Company\",\n        \"Company Overview\",\n        \"About Us\",\n        \"Our Company\",\n        \"Company Background\"\n    ]);\n\n    const positionDesc = extractSection([\n        \"Position Description\",\n        \"Job Details\",\n        \"Work Schedule\",\n        \"Employment Details\",\n        \"Working Conditions\"\n    ]);\n\n    // Enhanced skills extraction with more comprehensive patterns\n    const combinedText = `${responsibilities}\\n${requirements}\\n${text}`;\n    \n    // More comprehensive technical skills patterns\n    const technicalSkills = [];\n    const techPatterns = [\n        // Frontend Technologies\n        /\\b(React|Vue\\.?js|Angular|Svelte|Next\\.js|Nuxt\\.js|Gatsby|TypeScript|JavaScript|jQuery|Bootstrap|Tailwind|Sass|SCSS|Less)\\b/gi,\n        // Backend Technologies\n        /\\b(Node\\.js|Express|Fastify|PHP|Laravel|Symfony|Python|Django|Flask|Java|Spring|C#|\\.NET|Ruby|Rails|Go|Rust|Kotlin)\\b/gi,\n        // Databases\n        /\\b(MySQL|PostgreSQL|MongoDB|Redis|Elasticsearch|DynamoDB|Cassandra|SQLite|MariaDB|Oracle|SQL Server)\\b/gi,\n        // Cloud & DevOps\n        /\\b(AWS|Azure|Google Cloud|GCP|Docker|Kubernetes|Jenkins|GitLab CI|GitHub Actions|Terraform|Ansible|Vagrant)\\b/gi,\n        // Tools & Platforms\n        /\\b(Git|GitHub|GitLab|Bitbucket|Jira|Confluence|Slack|Postman|Insomnia|Figma|Adobe XD)\\b/gi,\n        // Email & Marketing Tools\n        /\\b(Postfix|OpenSMTPD|Sendmail|Mailgun|SendGrid|Amazon SES|SPF|DKIM|DMARC|SMTP)\\b/gi,\n        // Monitoring & Analytics\n        /\\b(Prometheus|Grafana|ELK Stack|New Relic|DataDog|Google Analytics|Mixpanel)\\b/gi,\n        // Integration & Automation specific skills\n        /\\b(API|APIs|webhook|webhooks|payment gateway|payment gateways|SaaS|integration|integrations|automation|checkout|billing|technical integration)\\b/gi,\n        // General technical skills\n        /\\b(web technologies|embedding scripts|callbacks|custom checkout flows|problem-solving|technical documentation|process improvement)\\b/gi\n    ];\n\n    techPatterns.forEach(pattern => {\n        const matches = combinedText.match(pattern) || [];\n        technicalSkills.push(...matches);\n    });\n\n    // Additional skill extraction from common phrases\n    const skillPhrases = [\n        /experience in ([^,\\.]+(?:integration|API|payment|automation|technical)[^,\\.]*)/gi,\n        /proficiency with ([^,\\.]+)/gi,\n        /understanding of ([^,\\.]+)/gi,\n        /working with ([^,\\.]+)/gi,\n        /knowledge of ([^,\\.]+)/gi\n    ];\n\n    skillPhrases.forEach(pattern => {\n        const matches = combinedText.matchAll(pattern);\n        for (const match of matches) {\n            if (match[1]) {\n                technicalSkills.push(match[1].trim());\n            }\n        }\n    });\n\n    const uniqueSkills = Array.from(new Set(technicalSkills.map(s => s.toLowerCase().replace(/\\s+/g, ' '))))\n        .filter(skill => skill.length > 2 && skill.length < 50) // Filter out too short or too long matches\n        .map(s => s.split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '))\n        .sort()\n        .join(', ');\n\n    // Enhanced tools extraction with more comprehensive list\n    const toolsMatch = combinedText.match(/\\b(N8N|Zapier|Make|Webhooks|GoHighLevel|ClickFunnels|Webflow|Framer|HubSpot|Contentful|Strapi|Sanity|Docker|AWS|Postman|Jest|Cypress|Selenium|Ansible|Terraform|Kubernetes|Jenkins|Grafana|Prometheus|ELK|Linux|Ubuntu|Debian|FoundationDB|DigitalOcean|Hetzner)\\b/gi) || [];\n    const tools = Array.from(new Set(toolsMatch.map(t => t.toLowerCase())))\n        .map(t => t.charAt(0).toUpperCase() + t.slice(1))\n        .sort()\n        .join(', ');\n\n    // Enhanced platforms extraction\n    const platformsMatch = combinedText.match(/\\b(GoHighLevel|ClickFunnels|WordPress|Shopify|Webflow|Framer|SaaS|AWS|Azure|Google Cloud|DigitalOcean|Hetzner|Linux|Ubuntu|Debian)\\b/gi) || [];\n    const platforms = Array.from(new Set(platformsMatch.map(p => p.toLowerCase())))\n        .map(p => p.charAt(0).toUpperCase() + p.slice(1))\n        .sort()\n        .join(', ');\n\n    // Enhanced programming languages extraction\n    const progLangs = combinedText.match(/\\b(JavaScript|TypeScript|Python|PHP|Java|C#|Ruby|Go|Rust|SQL|HTML|CSS|Shell|Bash|PowerShell)\\b/gi) || [];\n    const programmingLanguages = Array.from(new Set(progLangs.map(l => l.toLowerCase())))\n        .map(l => l.charAt(0).toUpperCase() + l.slice(1))\n        .sort()\n        .join(', ');\n\n    // Enhanced salary extraction with more specific patterns\n    const salaryPatterns = [\n        /Compensation[:\\s]*\\$?([\\d,]+(?:\\.\\d+)?)\\s*(?:-|to)\\s*\\$?([\\d,]+(?:\\.\\d+)?)(?:\\s*\\(starting salary\\))?/i,\n        /Salary[:\\s]*\\$?([\\d,]+(?:\\.\\d+)?)\\s*(?:-|to)\\s*\\$?([\\d,]+(?:\\.\\d+)?)(?:\\s*\\(starting salary\\))?/i,\n        /Compensation[:\\s]*\\$?([\\d,]+(?:\\.\\d+)?)\\+?(?:\\s*\\(starting salary\\))?/i,\n        /Salary[:\\s]*\\$?([\\d,]+(?:\\.\\d+)?)\\+?(?:\\s*\\(starting salary\\))?/i,\n        /\\$?([\\d,]+(?:\\.\\d+)?)\\+?(?:\\s*\\(starting salary\\))/i,\n        /\\$?([\\d,]+(?:\\.\\d+)?)(?:\\s*per\\s*month|\\s*\\/month|\\s*monthly)/i,\n        /Range[:\\s]*\\$?([\\d,]+(?:\\.\\d+)?)\\+?/i\n    ];\n\n    let salary = '';\n    for (const pattern of salaryPatterns) {\n        const match = text.match(pattern);\n        if (match && parseInt(match[1].replace(/,/g, '')) >= 1000) { // Only match salaries >= 1000 to avoid years\n            if (match[2]) {\n                // Range found\n                salary = `${match[1]} - ${match[2]}`;\n            } else {\n                salary = match[1].includes('+') || text.includes('starting salary') ? `${match[1]}+` : `${match[1]}`;\n            }\n            break;\n        }\n    }\n\n    // Enhanced working hours extraction with better time parsing\n    const hoursMatch = text.match(/(\\d+)\\s*hours?\\s*per\\s*day/i);\n    const timeRangeMatch = text.match(/(?:between\\s+)?(\\d+(?::\\d+)?\\s*(?:AM|PM))\\s*(?:to|till|–|-)\\s*(\\d+(?::\\d+)?\\s*(?:AM|PM))/i) ||\n                          text.match(/(\\d+\\s*(?:AM|PM))\\s*(?:to|till|–|-)\\s*(\\d+\\s*(?:AM|PM))/i);\n    \n    let hoursPerDay = 0;\n    let workingHours = '';\n    \n    if (hoursMatch) {\n        hoursPerDay = parseInt(hoursMatch[1]);\n    }\n    \n    if (timeRangeMatch) {\n        workingHours = `${timeRangeMatch[1]} - ${timeRangeMatch[2]}`;\n        \n        // Calculate hours if not explicitly stated\n        if (!hoursPerDay) {\n            const start = timeRangeMatch[1].toLowerCase();\n            const end = timeRangeMatch[2].toLowerCase();\n            \n            // Parse time components\n            const startHour = parseInt(start.replace(/[^\\d]/g, ''));\n            const endHour = parseInt(end.replace(/[^\\d]/g, ''));\n            const startIsPM = start.includes('pm');\n            const endIsPM = end.includes('pm');\n            const startIsAM = start.includes('am');\n            const endIsAM = end.includes('am');\n            \n            // Convert to 24-hour format\n            let start24 = startHour;\n            let end24 = endHour;\n            \n            if (startIsPM && startHour !== 12) start24 += 12;\n            if (startIsAM && startHour === 12) start24 = 0;\n            if (endIsPM && endHour !== 12) end24 += 12;\n            if (endIsAM && endHour === 12) end24 = 0;\n            \n            // Calculate duration\n            if (end24 > start24) {\n                hoursPerDay = end24 - start24;\n            } else if (end24 < start24) {\n                // Crosses midnight\n                hoursPerDay = (24 - start24) + end24;\n            }\n        }\n    }\n\n    // Enhanced timezone extraction\n    const timezoneMatch = text.match(/\\b([A-Z]{2,4})\\s*time\\b/i) || \n                         text.match(/\\b(Lebanon|Leb)\\s*time\\b/i) ||\n                         text.match(/\\b(EST|PST|GMT|UTC|CET)\\b/i);\n    let timezone = '';\n    if (timezoneMatch) {\n        timezone = timezoneMatch[1] === 'Leb' || timezoneMatch[1] === 'Lebanon' ? 'Lebanon time' : timezoneMatch[1] + ' time';\n    }\n\n    // Enhanced location extraction\n    const locationPatterns = [\n        /work from ([\\w\\s,]+?)(?:\\s*[.-]|\\.|$)/i,\n        /freedom to work from ([\\w\\s,]+?)(?:\\s*[.-]|$)/i,\n        /location[:\\s]*([\\w\\s,]+?)(?:\\s*[.-]|$)/i,\n        /based in ([\\w\\s,]+?)(?:\\s*[.-]|$)/i\n    ];\n\n    let location = '';\n    for (const pattern of locationPatterns) {\n        const match = text.match(pattern);\n        if (match) {\n            location = match[1].trim();\n            break;\n        }\n    }\n\n    // Enhanced remote status detection\n    let remoteStatus = 'On-site';\n    if (/remote|work from anywhere|freedom to work from|work remotely/i.test(text)) {\n        remoteStatus = 'Remote';\n    } else if (/hybrid|flexible|part remote/i.test(text)) {\n        remoteStatus = 'Hybrid';\n    }\n\n    // Enhanced working days extraction\n    const workingDaysMatch = text.match(/(\\d+)\\s*days?\\s*(?:a\\s*|per\\s*)?week/i) ||\n                            text.match(/Monday[^.]*Friday|Mon[^.]*Fri/i) ||\n                            text.match(/(5|five)\\s*days/i);\n    let workingDays = '';\n    if (workingDaysMatch) {\n        if (workingDaysMatch[1] && !isNaN(workingDaysMatch[1])) {\n            workingDays = `${workingDaysMatch[1]} days per week`;\n        } else if (/Monday.*Friday|Mon.*Fri|5|five/i.test(workingDaysMatch[0])) {\n            workingDays = '5 days per week';\n        } else {\n            workingDays = workingDaysMatch[0];\n        }\n    }\n\n    // Enhanced company size extraction\n    const companySizeMatch = text.match(/user base exceeding ([\\d,]+(?:\\.\\d+)?)\\s*(?:million|k)?\\s*(?:monthly\\s*)?active users/i) || \n                             text.match(/([\\d,]+(?:\\.\\d+)?)\\s*(?:million|k)?\\s*users/i) ||\n                             text.match(/([\\d,]+)\\s*employees/i) ||\n                             text.match(/(small|medium|large|startup|enterprise)\\s*(?:company|business|team)/i);\n    const companySize = companySizeMatch ? companySizeMatch[1] : '';\n\n    // Enhanced industry extraction\n    const industryMatch = text.match(/\\b(digital commerce|e-commerce|SaaS|technology|internet businesses|marketing|advertising|fintech|healthcare|education|retail|AI|artificial intelligence|automation|DevOps|cloud computing)\\b/i);\n    const industry = industryMatch ? industryMatch[1] : '';\n\n    // Enhanced milestones extraction\n    const milestonesPattern = /Within\\s*\\d+\\s*days:[^.]*\\.?|First\\s*\\d+\\s*days:[^.]*\\.?/gi;\n    const milestonesMatches = text.match(milestonesPattern) || [];\n    const milestones = milestonesMatches.join(' ; ');\n\n    // Enhanced benefits and time-off extraction\n    const benefitsPattern = /Benefits?[:\\s]*([\\s\\S]*?)(?=\\n\\s*[A-Z][^:\\n]*:|Position Description|Compensation|$)/i;\n    const benefitsMatch = text.match(benefitsPattern);\n    \n    // Extract vacation and time-off policies\n    const vacationPatterns = [\n        /(\\d+)\\s*(?:weeks?|days?)\\s*(?:of\\s*)?(?:paid\\s*)?(?:vacation|PTO|time off|leave)/gi,\n        /unlimited\\s*(?:vacation|PTO|time off)/gi,\n        /flexible\\s*(?:vacation|PTO|time off)/gi,\n        /may request time off(?:\\s*anytime)?(?:\\s*with\\s*(?:advanced\\s*)?notice)?/gi,\n        /can request\\s*(?:vacation|time off|leave)/gi,\n        /(?:vacation|PTO|time off)\\s*policy/gi\n    ];\n    \n    const vacationBenefits = [];\n    vacationPatterns.forEach(pattern => {\n        const matches = text.match(pattern) || [];\n        vacationBenefits.push(...matches);\n    });\n    \n    // Extract general benefits\n    const generalBenefitsMatch = text.match(/health|insurance|dental|401k|equity|stock options|retirement|medical|vision/gi) || [];\n    \n    // Combine all benefits\n    let benefits = '';\n    const allBenefits = [];\n    \n    if (benefitsMatch && benefitsMatch[1]) {\n        allBenefits.push(benefitsMatch[1].replace(/\\n+/g, ' ').trim());\n    }\n    \n    if (vacationBenefits.length > 0) {\n        allBenefits.push(...vacationBenefits);\n    }\n    \n    if (generalBenefitsMatch.length > 0) {\n        allBenefits.push(...generalBenefitsMatch);\n    }\n    \n    benefits = Array.from(new Set(allBenefits.map(b => b.toLowerCase())))\n        .map(b => b.charAt(0).toUpperCase() + b.slice(1))\n        .join(', ');\n\n    // Extract specific vacation/PTO policy\n    const vacationPolicy = (() => {\n        // Look for specific vacation amounts\n        const vacationAmount = text.match(/(\\d+)\\s*(?:weeks?|days?)\\s*(?:of\\s*)?(?:paid\\s*)?(?:vacation|PTO|time off)/i);\n        if (vacationAmount) {\n            return `${vacationAmount[1]} ${vacationAmount[0].includes('week') ? 'weeks' : 'days'} vacation`;\n        }\n        \n        // Look for unlimited/flexible policies\n        if (text.match(/unlimited\\s*(?:vacation|PTO|time off)/i)) {\n            return 'Unlimited vacation';\n        }\n        \n        if (text.match(/flexible\\s*(?:vacation|PTO|time off)/i)) {\n            return 'Flexible time off';\n        }\n        \n        // Look for request-based policies\n        if (text.match(/may request time off(?:\\s*anytime)?(?:\\s*with\\s*(?:advanced\\s*)?notice)?/i)) {\n            const noticeMatch = text.match(/with\\s*(advanced\\s*)?notice/i);\n            return noticeMatch ? 'Time off with advance notice' : 'Time off upon request';\n        }\n        \n        return '';\n    })();\n\n    // Enhanced job title extraction\n    let jobTitle = data.job_title || '';\n    if (!jobTitle) {\n        const titleMatch = text.match(/^([^.\\n]+?)(?:\\s*Expand|\\n|$)/);\n        jobTitle = titleMatch ? titleMatch[1].trim() : '';\n    }\n\n    // Enhanced experience level extraction - prioritize job-specific experience\n    const jobExperienceMatch = text.match(/(\\d+)(?:-(\\d+))?\\s*years?\\s*(?:of\\s*)?experience.*?(?:in|with).*?(?:full.?stack|development|technical|leadership)/i) ||\n                               text.match(/looking for.*?(\\d+)(?:-(\\d+))?\\s*years?\\s*(?:of\\s*)?experience/i) ||\n                               text.match(/(\\d+)(?:-(\\d+))?\\s*years?\\s*(?:of\\s*)?experience.*?(?:required|preferred|minimum)/i);\n    \n    const seniorityMatch = text.match(/(entry|junior|mid|senior|lead|principal|technical lead)\\s*level/i) ||\n                          text.match(/(beginner|intermediate|advanced|expert|senior)/i);\n    \n    let experienceLevel = '';\n    if (jobExperienceMatch) {\n        if (jobExperienceMatch[2]) {\n            experienceLevel = `${jobExperienceMatch[1]}-${jobExperienceMatch[2]} years`;\n        } else {\n            experienceLevel = `${jobExperienceMatch[1]} years`;\n        }\n    } else if (seniorityMatch) {\n        experienceLevel = seniorityMatch[1];\n    }\n\n    // Enhanced education extraction\n    const educationMatch = text.match(/\\b(Bachelor|Master|Ph\\.?D\\.?|Degree|Diploma|Certificate|Associates?)\\b/gi) || [];\n    const educationLevel = Array.from(new Set(educationMatch.map(e => e.toLowerCase())))\n        .map(e => e.charAt(0).toUpperCase() + e.slice(1))\n        .join(', ');\n\n    return {\n        // Basic Info\n        url: data.url || '',\n        scraped_data: text,\n        job_title: jobTitle,\n        company: data.company || '',\n        company_name: companyInfo,\n        company_size: companySize,\n        industry: industry,\n        \n        // Compensation\n        salary: salary,\n        currency: salary ? 'USD' : '',\n        bonus: '',\n        equity: '',\n        \n        // Location & Work Type\n        location: location,\n        job_type: remoteStatus.toLowerCase(),\n        position_type: '', \n        remote_status: remoteStatus,\n        \n        // Requirements\n        experience: experienceLevel || requirements,\n        education_level: educationLevel,\n        certifications: '',\n        \n        // Skills & Technologies\n        skills: uniqueSkills,\n        tools: tools,\n        software_tools: tools,\n        programming_languages: programmingLanguages,\n        platforms: platforms,\n        \n        // Job Details\n        description: roleOverview || (responsibilities ? responsibilities.substring(0, 300) + '...' : '') || \n                    (text.split('\\n').find(line => line.length > 100 && !line.includes('Expand')) || '').substring(0, 300),\n        job_description_summary: roleOverview ? roleOverview.split('.').slice(0, 2).join('.') + '.' : \n                                (responsibilities ? responsibilities.split('.').slice(0, 2).join('.') + '.' : ''),\n        responsibilities: responsibilities,\n        requirements: requirements,\n        \n        // Work Schedule\n        benefits: benefits,\n        vacation_policy: vacationPolicy,\n        working_days: workingDays,\n        days_off: (() => {\n            // Check for explicit mentions of days off\n            if (text.match(/Saturday\\s*(?:and|&)\\s*Sunday|weekends/i)) {\n                return 'Saturday & Sunday';\n            }\n            // Check for Monday-Friday schedule (implies weekend off)\n            if (text.match(/Monday\\s*(?:-|to|through|till)\\s*Friday|Mon\\s*(?:-|to)\\s*Fri/i)) {\n                return 'Saturday & Sunday';\n            }\n            // Check for 5 days per week (usually implies weekend off)\n            if (text.match(/5\\s*days?\\s*(?:per\\s*|a\\s*)?week|five\\s*days?\\s*(?:per\\s*|a\\s*)?week/i)) {\n                return 'Saturday & Sunday';\n            }\n            // Check for \"may request time off\" combined with other indicators\n            if (text.match(/may request time off/i) && (text.match(/Monday.*Friday|Mon.*Fri|5.*days/i))) {\n                return 'Saturday & Sunday';\n            }\n            return '';\n        })(),\n        hours_per_day: hoursPerDay,\n        working_hours: workingHours,\n        time_zone: timezone,\n        shift_type: workingHours && /PM|pm/.test(workingHours.split('-')[1]) ? 'Evening' : '',\n        \n        // Timeline & Milestones\n        start_date: text.match(/Within\\s*(\\d+)\\s*days/i) ? text.match(/Within\\s*(\\d+)\\s*days/i)[1] + ' days' : '',\n        milestones: milestones,\n        achievements_or_metrics: (text.match(/\\$[\\d,]+(?:\\.\\d+)?\\s*(?:billion|million)|generating[\\w\\s\\d\\-]*revenues|millions?\\s*of\\s*emails|[\\d,]+\\s*users/gi) || []).join(', '),\n        \n        // Metadata\n        last_scraped: data.last_scraped,\n        scraper_status: data.scraper_status,\n    };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        624
+      ],
+      "id": "5cc84d35-4004-462c-b5ab-bfaa6ce509fd",
+      "name": "Tranform Data1"
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "scrappeddata",
+        "fields": "=url,job_title,salary,job_type,experience,skills,benefits,description,location,company,company_name,company_size,industry,currency,bonus,equity,position_type,remote_status,education_level,certifications,tools,software_tools,programming_languages,platforms,job_description_summary,working_days,days_off,hours_per_day,working_hours,time_zone,shift_type,milestones,start_date,achievements_or_metrics,last_scraped,scraper_status,requirements,responsibilities,vacation_policy",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.mongoDb",
+      "typeVersion": 1.2,
+      "position": [
+        1168,
+        656
+      ],
+      "id": "b217e1f0-ba04-475c-92a4-0ef0e15aa13e",
+      "name": "Insert documents1",
+      "credentials": {
+        "mongoDb": {
+          "id": "hrymhUAAnBFOD0Rr",
+          "name": "MongoDB account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get all incoming rows\nconst rows = $input.all().map(item => item.json);\n\n// Filter out rows without a URL and standardize the structure\nconst filteredRows = rows.filter(row => {\n  return row.job_description_url || \n         (row.job && row.job.description_url) ||\n         row.url;\n});\n\n// Map to consistent output format\nreturn filteredRows.map(row => {\n  return {\n    ...row,\n    job_title: row.job_title || row.jsp.title,\n    url: row.job_description_url || \n         (row.job ? row.job.description_url : null) || \n         row.url\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        688
+      ],
+      "id": "f5c64812-872f-4fa1-9362-3aa13fe48b55",
+      "name": "Row Filter1"
+    },
+    {
+      "parameters": {
+        "options": {
+          "reset": false
+        }
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -80,
+        688
+      ],
+      "id": "3b2167b1-e0ed-4c5f-98c3-07bfac1cc562",
+      "name": "Loop Over Items1",
+      "alwaysOutputData": false,
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyHour"
+            }
+          ]
+        },
+        "documentId": {
+          "__rl": true,
+          "value": "1wgUToSwQGe-M3GvkzcxW1hw4XewL_m0PpZlhmgxttYo",
+          "mode": "list",
+          "cachedResultName": "RemotelyX links",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1wgUToSwQGe-M3GvkzcxW1hw4XewL_m0PpZlhmgxttYo/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1wgUToSwQGe-M3GvkzcxW1hw4XewL_m0PpZlhmgxttYo/edit#gid=0"
+        },
+        "includeInOutput": "both",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [
+        -528,
+        688
+      ],
+      "id": "55b590cf-2f84-4d9c-8f52-5572429bd556",
+      "name": "Google Sheets Trigger1",
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": {
+          "id": "Oj9BRpBNVvJHTdt5",
+          "name": "Google Sheets Trigger account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Puppeteer1": {
+      "main": [
+        [
+          {
+            "node": "Error Handling1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handling1": {
+      "main": [
+        [
+          {
+            "node": "Tranform Data1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tranform Data1": {
+      "main": [
+        [
+          {
+            "node": "Insert documents1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert documents1": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Row Filter1": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items1": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Puppeteer1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Sheets Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Row Filter1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "9c5f096179a485bdd0c41fb1c5697da828171decd9e6864f22b5c798587bc103"
+  }
+}
