@@ -1,0 +1,52 @@
+# Environment files (sensitive data)
+.env
+.env.*
+*.env
+!.env.example
+
+# Backend (Node.js/NestJS)
+backend/node_modules/
+backend/dist/
+backend/.env
+backend/npm-debug.log*
+backend/yarn-debug.log*
+backend/yarn-error.log*
+
+# Frontend (Python/Streamlit)
+frontend/__pycache__/
+frontend/*.pyc
+frontend/*.pyo
+frontend/*.pyd
+frontend/.Python
+frontend/env/
+frontend/venv/
+frontend/.venv/
+frontend/pip-log.txt
+
+# Docker
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+.tmp/

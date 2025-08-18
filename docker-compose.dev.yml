@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: remotelyx-mongodb-dev
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: remotelyx
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data_dev:/data/db
+    networks:
+      - remotelyx-network-dev
+
+  # Backend API (Development)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: remotelyx-backend-dev
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - MONGODB_URI=mongodb://admin:password123@mongodb:27017/remotelyx?authSource=admin
+    ports:
+      - "3001:3001"
+    depends_on:
+      - mongodb
+    networks:
+      - remotelyx-network-dev
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: npm run start:dev
+
+  # Frontend (Streamlit) - Development
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: remotelyx-frontend-dev
+    restart: unless-stopped
+    environment:
+      - BACKEND_URL=http://backend:3001
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    networks:
+      - remotelyx-network-dev
+    volumes:
+      - ./frontend:/app
+      - /app/__pycache__
+
+volumes:
+  mongodb_data_dev:
+
+networks:
+  remotelyx-network-dev:
+    driver: bridge

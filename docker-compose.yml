@@ -1,0 +1,98 @@
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: remotelyx-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-password123}
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE:-remotelyx}
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - remotelyx-network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: remotelyx-backend
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - MONGODB_URI=${MONGODB_URI:-mongodb://admin:password123@mongodb:27017/remotelyx?authSource=admin}
+    env_file:
+      - ./backend/.env
+    ports:
+      - "3001:3001"
+    depends_on:
+      - mongodb
+    networks:
+      - remotelyx-network
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+  # Frontend (Streamlit)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: remotelyx-frontend
+    restart: unless-stopped
+    environment:
+      - BACKEND_URL=http://backend:3001
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    networks:
+      - remotelyx-network
+    volumes:
+      - ./frontend:/app
+      - /app/__pycache__
+
+  # n8n Workflow Automation
+  n8n:
+    build:
+      context: .
+      dockerfile: Dockerfile.n8n
+    container_name: remotelyx-n8n
+    restart: unless-stopped
+    environment:
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-remotelyx-n8n-encryption-key-2024}
+      - N8N_HOST=0.0.0.0
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_USER_MANAGEMENT_DISABLED=true
+      - N8N_BASIC_AUTH_ACTIVE=false
+      - WEBHOOK_URL=http://localhost:5678
+      - GENERIC_TIMEZONE=UTC
+      - N8N_COMMUNITY_NODES_INCLUDE=n8n-nodes-puppeteer
+    ports:
+      - "5678:5678"
+    depends_on:
+      - mongodb
+    networks:
+      - remotelyx-network
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./RemotelyXworkflow.json:/home/node/.n8n/workflows/RemotelyXworkflow.json
+    security_opt:
+      - seccomp:unconfined
+    cap_add:
+      - SYS_ADMIN
+
+volumes:
+  mongodb_data:
+  n8n_data:
+
+networks:
+  remotelyx-network:
+    driver: bridge
