@@ -68,6 +68,37 @@ export class JobsController {
     return this.jobsService.getJobsBySeniority(level);
   }
 
+  // n8n Scraped Data endpoints - MUST come before :id route
+  @Get('scraped')
+  async getScrapedJobs(@Query() query: any) {
+    return this.jobsService.getScrapedJobs(query);
+  }
+
+  @Get('scraped/recent')
+  async getRecentScrapedJobs(@Query('limit') limit: string) {
+    return this.jobsService.getRecentScrapedJobs(parseInt(limit) || 10);
+  }
+
+  @Get('scraped/successful')
+  async getSuccessfulScrapedJobs() {
+    return this.jobsService.getSuccessfulScrapedJobs();
+  }
+
+  @Get('scraped/failed')
+  async getFailedScrapedJobs() {
+    return this.jobsService.getFailedScrapedJobs();
+  }
+
+  @Get('scraped/sync')
+  async syncScrapedJobsToMain() {
+    return this.jobsService.syncScrapedJobsToMain();
+  }
+
+  @Get('scraped/:id')
+  async getScrapedJobById(@Param('id') id: string) {
+    return this.jobsService.getScrapedJobById(id);
+  }
+
   @Get(':id')
   async getJobById(@Param('id') id: string) {
     return this.jobsService.getJobById(id);

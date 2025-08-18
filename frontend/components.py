@@ -92,7 +92,7 @@ def create_skills_heatmap():
             return 'background-color: #64748b; color: #475569; font-weight: bold; text-align: center; padding: 2px; border: 1px solid #94a3b8; font-size: 10px;'
     
     # Apply styling
-    styled_df = df.style.applymap(color_cells)
+    styled_df = df.style.map(color_cells)
     
     # Display the styled dataframe with full height to avoid scrolling
     st.dataframe(
